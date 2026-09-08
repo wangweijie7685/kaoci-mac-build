@@ -1,0 +1,39 @@
+name: mac-build
+
+# 触发方式：
+#   1) push 到 main / master 分支（自动）
+#   2) GitHub 页面 Actions 标签 → 手动 Run workflow（推荐，免 push）
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    # macos-14 = Apple Silicon (arm64, M 系列)，产出 M1~M4 原生 .app
+    # 如需 Intel 版改成 macos-13（x86_64），或加矩阵跑两遍
+    runs-on: macos-14
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 一键打包 .app
+        run: python3 kaoci_dmw/mac_build.py
+
+      - name: 压缩为 zip（ditto 保留权限与符号链接）
+        run: |
+          cd kaoci_dmw/dist
+          ditto -c -k --sequesterRsrc --keepParent "考次链接大魔王.app" kaoci-mac-arm64.zip
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaoci-mac-arm64
+          path: kaoci_dmw/dist/kaoci-mac-arm64.zip
+          if-no-files-found: error
+          retention-days: 7
