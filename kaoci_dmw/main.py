@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-考次链接大魔王  v1.5
+考次链接大魔王  v1.6
 =====================
 UOM 民航局无人机考试系统「考次链接」批量导出桌面工具
+
+v1.6 变更：
+  * 新增：考点过滤框 —— 考试点太多，下拉翻页找不到。
+    在「考点过滤」框输入关键字（如“吉林”），下拉列表实时只显示
+    匹配的考点；清空恢复全部。查询时选中的考点仍精确传给接口。
+  * 修复：查询考次一律 500 —— UOM 服务端给列表接口加了单页
+    limit<=100 硬上限（超过直接 500），core 已改为自动分页拉取。
 
 v1.5 变更：
   * 新增：--self-test 自检开关 —— 打包脚本打完后会让产物自己 import 一遍
@@ -399,6 +406,14 @@ class ModePanel(QWidget):
         self._setup_place_fuzzy()   # v1.3：考试点支持输入关键字模糊过滤
         gl.addWidget(self.cb_place, 0, 3)
 
+        # v1.6：考点太多，下拉翻页找不到 → 加一个实时过滤框
+        # 输入关键字后，下拉列表只剩匹配的考点；清空恢复全部
+        gl.addWidget(QLabel("考点过滤"), 1, 2)
+        self.ed_place_filter = QLineEdit()
+        self.ed_place_filter.setPlaceholderText("🔍 输入关键字，实时过滤下方考点列表")
+        self.ed_place_filter.setClearButtonEnabled(True)
+        self.ed_place_filter.textChanged.connect(self._filter_places)
+        gl.addWidget(self.ed_place_filter, 1, 3)
         self.btn_query = QPushButton("查询考次")
         self.btn_query.setMinimumWidth(110)
         self.btn_query.clicked.connect(self.do_query)
@@ -453,6 +468,28 @@ class ModePanel(QWidget):
             pass  # 更旧版本 Qt 自动退化为前缀匹配
         self.cb_place.setCompleter(comp)
 
+    # ---------- 考试点实时过滤（v1.6） ----------
+    def _filter_places(self, text):
+        """按关键字实时过滤下拉列表：输入“吉林”只留含吉林的考点，清空恢复全部。
+
+        与 QCompleter 的区别：completer 只在输入时给建议；这里直接重建下拉列表，
+        点开下拉就能看到过滤后的全部命中项，考试点多时比翻下拉好用得多。
+        """
+        kw = (text or "").strip().lower()
+        cur_name = self.cb_place.currentData()
+        self.cb_place.blockSignals(True)
+        self.cb_place.clear()
+        self.cb_place.addItem("全部", "")
+        for title in sorted(self._places.keys()):
+            if kw and kw not in title.lower():
+                continue
+            self.cb_place.addItem(title, self._places[title])
+        # 尽量保住用户已选中的考点（若它仍匹配过滤条件）
+        idx = self.cb_place.findData(cur_name)
+        if idx >= 0:
+            self.cb_place.setCurrentIndex(idx)
+        self.cb_place.blockSignals(False)
+
     def _resolve_place(self):
         """把考试点输入解析成接口要发的 name 值；支持关键字模糊匹配"""
         text = self.cb_place.currentText().strip()
@@ -480,15 +517,17 @@ class ModePanel(QWidget):
         """places: {title: name}"""
         self._places = dict(places or {})
         cur = self.cb_place.currentData()
-        self.cb_place.blockSignals(True)
-        self.cb_place.clear()
-        self.cb_place.addItem("全部", "")
-        for title in sorted(self._places.keys()):
-            self.cb_place.addItem(title, self._places[title])
-        idx = self.cb_place.findData(cur)
-        if idx >= 0:
-            self.cb_place.setCurrentIndex(idx)
-        self.cb_place.blockSignals(False)
+        # 按当前过滤关键字重建列表（无关键字 = 全量）
+        self._filter_places(self.ed_place_filter.text() if hasattr(self, "ed_place_filter") else "")
+        if cur:
+            idx = self.cb_place.findData(cur)
+            if idx >= 0:
+                self.cb_place.setCurrentIndex(idx)
+        cnt = len(self._places)
+        self.lbl_place_count = getattr(self, "lbl_place_count", None)
+        self.log(f"考试点列表已加载：{cnt} 个考点"
+                 + (f"（过滤后下拉 {self.cb_place.count() - 1} 项）"
+                    if hasattr(self, "ed_place_filter") and self.ed_place_filter.text().strip() else ""))
 
     def refresh_places(self):
         if self.pworker and self.pworker.isRunning():
@@ -614,7 +653,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME}  v1.5")
+        self.setWindowTitle(f"{APP_NAME}  v1.6")
         self.resize(1180, 760)
         self.worker = None
         self._login_cancel = threading.Event()  # 一键登录取消信号
