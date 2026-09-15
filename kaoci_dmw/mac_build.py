@@ -58,11 +58,38 @@ def selfcheck_venv():
 
 
 def verify_bundle(app_path):
-    """构建后自检：在 .app 里实地确认 numpy / pandas 真的被打进去了。
+    """构建后自检：让 .app 里的可执行文件自己 import 一遍依赖。
 
-    教训：曾经在 PyInstaller 里加了 --exclude-module numpy，
-    产物照样生成、也没有报错，但用户一双击就弹
-    "Unable to import required dependency numpy"。所以必须落地检查。
+    这是唯一可靠的判定方式。曾经的做法是「在 .app 目录里找 numpy/pandas
+    文件夹」，但 macOS 上纯 Python 包（requests/openpyxl/core 模块）被装进
+    可执行文件内部的 PYZ 归档，磁盘上并不存在对应目录，会误判成缺失。
+    现在改为直接运行产物：<app>/Contents/MacOS/<name> --self-test
+    退出码 0 = 依赖完整；非 0 = 缺依赖，立即中止发布。
+    """
+    print("\n[构建后自检] 运行 .app 内可执行文件 --self-test")
+    exe_name = os.path.basename(app_path)[:-4]  # 去掉 .app
+    inner = os.path.join(app_path, "Contents", "MacOS", exe_name)
+    if not os.path.isfile(inner):
+        print("  ! 找不到可执行文件：", inner)
+        return False
+    try:
+        st = subprocess.run([inner, "--self-test"], capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        print("  ! 自检超时")
+        return False
+    out = (st.stdout or b"").decode("utf-8", "ignore")
+    err = (st.stderr or b"").decode("utf-8", "ignore")
+    print("  退出码:", st.returncode)
+    for line in (out + err).splitlines():
+        print("  |", line)
+    return st.returncode == 0
+
+
+def verify_bundle_files(app_path):
+    """辅助检查：确认带二进制扩展的 numpy / pandas / PySide6 确实在磁盘上。
+
+    纯 Python 包不在磁盘上属正常（在 PYZ 里），所以这里只查二进制包，
+    最终结论仍以 verify_bundle 的 --self-test 结果为准。
     """
     hits = []
     for root, _dirs, files in os.walk(app_path):
@@ -70,22 +97,16 @@ def verify_bundle(app_path):
         for f in files:
             hits.append(os.path.join(rel, f))
     blob = "\n".join(hits).lower()
-
     checks = {
-        "numpy": lambda s: ("/numpy/" in s or "/numpy-" in s or "numpy/core" in s
-                            or "numpy.libs" in s or "numpy/core/_multiarray" in s),
-        "pandas": lambda s: ("/pandas/" in s or "pandas/_libs" in s
-                             or "pandas.libs" in s),
-        "openpyxl": lambda s: "/openpyxl/" in s or "openpyxl/" in s,
-        "requests": lambda s: "/requests/" in s,
-        "uom_kaoci_export": lambda s: "uom_kaoci_export" in s,
+        "numpy(二进制)": lambda s: "numpy/core" in s or "/numpy/" in s,
+        "pandas(二进制)": lambda s: "pandas/_libs" in s or "/pandas/" in s,
+        "PySide6": lambda s: "pyside6" in s,
     }
-    print("\n[构建后自检] 扫描 .app 内容")
+    print("\n[构建后自检] 二进制依赖落盘检查")
     ok = True
     for name, fn in checks.items():
         hit = fn(blob)
-        print("  {} {}{}".format("OK  " if hit else "MISS", name,
-                                 "" if hit else "  <-- 缺失，产物不可用！"))
+        print("  {} {}".format("OK  " if hit else "MISS", name))
         ok = ok and hit
     return ok
 
@@ -139,10 +160,12 @@ def build():
     print("   应用包:", app)
     print("   启动方式: open '{}'".format(app))
     print("   或直接双击打开（首次可能 Gatekeeper 拦截，需右键→打开）")
-    # 落地自检：确认关键依赖真的在包里，不合格直接失败退出
-    if not verify_bundle(app):
+    # 落地自检：让产物自己 import 一遍依赖，不合格直接失败退出
+    verify_bundle_files(app)          # 仅供参考的落盘检查
+    if not verify_bundle(app):        # 决定性判定
         print("\n❌ 构建后自检未通过：产物缺少关键依赖，请勿分发！")
         sys.exit(1)
+    print("\n✅ 构建后自检通过：冻结环境依赖完整")
 
 
 def main():

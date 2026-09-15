@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-考次链接大魔王  v1.4
+考次链接大魔王  v1.5
 =====================
 UOM 民航局无人机考试系统「考次链接」批量导出桌面工具
+
+v1.5 变更：
+  * 新增：--self-test 自检开关 —— 打包脚本打完后会让产物自己 import 一遍
+    全部运行时依赖，用退出码判定「包是否完整」。避免再次出现「能构建、
+    能启动、一用就崩」的坏包（此前曾因排除 numpy 导致启动即报
+    Unable to import required dependency numpy）。
 
 v1.4 变更：
   * 修复：token 解析支持 Base64 嵌套 —— UOM 登录态实际以 Base64(JSON)
@@ -30,13 +36,58 @@ import threading
 import datetime
 import subprocess
 
+# 源码运行模式：core 模块在上级 outputs/ 目录（与 kaoci_dmw/ 平级）
 if not getattr(sys, "frozen", False):
-    # 源码运行模式：core 模块在上级 outputs/ 目录（与 kaoci_dmw/ 平级）
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    import uom_kaoci_export as core  # noqa: E402
-else:
-    # PyInstaller 冻结模式：uom_kaoci_export 已作为 module 打进包内
-    import uom_kaoci_export as core  # noqa: E402
+
+
+# ---- 打包自检开关 ------------------------------------------------------
+# 打包脚本在构建完成后执行：<产物> --self-test
+# 在「冻结环境」里真刀真枪 import 一遍关键依赖，全部通过则退出码 0。
+# 这样「依赖到底有没有被打进包」就是可验证的事实，而不是靠体积或字符串猜。
+# 教训：曾把 numpy 加进 PyInstaller 的 --exclude-module 压体积，产物照样
+# 生成、也没有任何报错，用户一双击就弹
+# "Unable to import required dependency numpy"。
+SELF_TEST_MODULES = [
+    "requests",           # 网络请求
+    "pandas",             # core 模块导 Excel
+    "numpy",              # pandas 的硬依赖
+    "openpyxl",           # pandas 写 xlsx 的引擎
+    "PySide6.QtCore",     # 界面
+    "PySide6.QtWidgets",
+    "uom_kaoci_export",   # 核心业务模块
+]
+
+if "--self-test" in sys.argv:
+    import importlib
+
+    def _emit(msg):
+        # --noconsole / --windowed 打包后 sys.stdout/stderr 可能是 None，
+        # 直接 write 会抛 AttributeError，这里做空值兜底。
+        for _s in (sys.stdout, sys.stderr):
+            if _s is not None:
+                try:
+                    _s.write(msg + "\n")
+                    _s.flush()
+                except Exception:
+                    pass
+
+    _bad = []
+    for _m in SELF_TEST_MODULES:
+        try:
+            importlib.import_module(_m)
+        except Exception as _e:
+            _bad.append("{} -> {}: {}".format(_m, type(_e).__name__, _e))
+    if _bad:
+        _emit("[self-test] FAIL 冻结环境缺少以下依赖：")
+        for _x in _bad:
+            _emit("    - " + _x)
+        sys.exit(1)
+    _emit("[self-test] OK 已导入: " + ", ".join(SELF_TEST_MODULES))
+    sys.exit(0)
+
+# PyInstaller 冻结模式与源码模式都从包内/上级目录导入 core
+import uom_kaoci_export as core  # noqa: E402
 
 # ---- Qt 绑定自动适配：优先 PySide6，其次 PyQt5 / PyQt6 ----
 QT_BINDING = None
@@ -563,7 +614,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME}  v1.4")
+        self.setWindowTitle(f"{APP_NAME}  v1.5")
         self.resize(1180, 760)
         self.worker = None
         self._login_cancel = threading.Event()  # 一键登录取消信号

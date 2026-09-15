@@ -71,4 +71,37 @@ args = [
 ]
 print("RUN:", " ".join(args))
 r = subprocess.run(args, cwd=BASE)
-sys.exit(r.returncode)
+if r.returncode != 0:
+    print("❌ PyInstaller 构建失败")
+    sys.exit(r.returncode)
+
+# ---- 构建后验证（硬门槛，不通过就报错退出）--------------------------
+# 让产物自己 import 一遍全部运行时依赖。这是唯一能真正证明
+# 「依赖被打进包了」的办法：产物能生成、进程能起来，都不代表能用。
+exe = os.path.join(BASE, "dist", "考次链接大魔王.exe")
+print("\n[验证] 运行产物自检：", exe, "--self-test")
+try:
+    st = subprocess.run([exe, "--self-test"], cwd=os.path.dirname(exe),
+                        capture_output=True, timeout=180)
+    out = (st.stdout or b"").decode("utf-8", "ignore")
+    err = (st.stderr or b"").decode("utf-8", "ignore")
+    print("  退出码:", st.returncode)
+    for line in (out + err).splitlines():
+        print("  |", line)
+    if st.returncode != 0:
+        print("❌ 产物自检失败：包内缺少依赖，请勿分发！")
+        sys.exit(1)
+    print("✅ 产物自检通过：冻结环境依赖完整")
+except subprocess.TimeoutExpired:
+    print("❌ 产物自检超时")
+    sys.exit(1)
+
+# 再做一次归档 + 启动窗口检查（依赖精确 TOC + 区分主窗口/错误对话框）
+verifier = os.path.join(BASE, "verify_exe.py")
+if os.path.isfile(verifier):
+    print("\n[验证] 归档与启动窗口检查")
+    v = subprocess.run([sys.executable, verifier, exe], cwd=BASE)
+    if v.returncode != 0:
+        print("❌ 归档/启动窗口检查未通过")
+        sys.exit(v.returncode)
+
