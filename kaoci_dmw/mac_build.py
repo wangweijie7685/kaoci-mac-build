@@ -62,10 +62,18 @@ def build():
         "--paths", PARENT,
         "--osx-bundle-identifier", "com.kacida.kaoci",
         "--hidden-import", "uom_kaoci_export",
+        # 显式带上标准库（token 解析用到 base64/json，避免极端情况下被裁掉）
+        "--hidden-import", "base64",
+        "--hidden-import", "json",
         "--exclude-module", "playwright",
         "--exclude-module", "pytest",
         "--exclude-module", "tkinter",
         "--exclude-module", "matplotlib",
+        "--exclude-module", "PyQt5",
+        "--exclude-module", "PyQt6",
+        "--exclude-module", "numpy",
+        "--exclude-module", "scipy",
+        "--exclude-module", "PIL",
         MAIN,
     ]
     run(args, cwd=BASE)

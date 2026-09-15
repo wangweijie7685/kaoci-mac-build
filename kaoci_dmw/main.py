@@ -99,8 +99,8 @@ except Exception:
     pass
 TOKEN_FILE = os.path.join(APP_DIR, "token.txt")   # 登录态持久化文件
 DEFAULT_TOKEN = core.TOKEN
-DEFAULT_OUT = r"E:\xz\uom_out"
-DEFAULT_OUT_PLACE = r"E:\xz\uom_out_place"
+DEFAULT_OUT = r"C:\Users\ThinkPad\Downloads"
+DEFAULT_OUT_PLACE = r"C:\Users\ThinkPad\Downloads"
 CDP_PORT = 9223   # Chrome 远程调试端口（CDP 提取登录态）
 # 独立的调试浏览器配置目录：用它启动 Chrome，绝不碰用户日常 Chrome 的 profile
 # （日常浏览器继续正常用，登录态/标签都不受影响；此目录内的 UOM 登录态会持久化保存）
@@ -560,7 +560,11 @@ class MainWindow(QMainWindow):
         self.resize(1180, 760)
         self.worker = None
         self._login_cancel = threading.Event()  # 一键登录取消信号
+        # 按 tab 分别记忆输出目录：{0: 按机构, 1: 按考点}，切 tab 时不互相覆盖
+        self._out_memo = {}
+        self._last_tab = None
         self._build()
+        self._last_tab = self.tabs.currentIndex()
         self.sig_token.connect(self._cdp_apply)
         self.sig_log.connect(self._append_log)
         self.sig_login_done.connect(self._login_ui_done)
@@ -661,6 +665,9 @@ class MainWindow(QMainWindow):
 
         gl.addWidget(QLabel("输出目录"), 1, 0)
         self.ed_out = QLineEdit(DEFAULT_OUT)
+        self.ed_out.setToolTip("每个 Tab 各记一份输出目录，切换时自动保留上次用的")
+        # 手动编辑完（失焦/回车）立即记忆到当前 tab
+        self.ed_out.editingFinished.connect(self._remember_cur_out)
         gl.addWidget(self.ed_out, 1, 1, 1, 4)
         self.btn_browse = QPushButton("浏览...")
         self.btn_browse.clicked.connect(self.browse)
@@ -715,8 +722,30 @@ class MainWindow(QMainWindow):
     def cur_panel(self):
         return self.panel_agency if self.tabs.currentIndex() == 0 else self.panel_place
 
+    def _remember_cur_out(self):
+        """把当前输入框里的输出目录，按当前 tab 分别留存。
+        按机构(tab0) / 按考点(tab1) 各记一份，互不覆盖。"""
+        try:
+            key = 0 if self.tabs.currentIndex() == 0 else 1
+            self._out_memo[key] = self.ed_out.text().strip()
+        except Exception:
+            pass
+
     def on_tab_changed(self, idx):
-        self.ed_out.setText(DEFAULT_OUT if idx == 0 else DEFAULT_OUT_PLACE)
+        """切换 tab：先把「旧 tab」的目录存下来，再恢复「新 tab」上次用过的目录。
+        首次进入某 tab 时用其默认目录。"""
+        # 先记录离开的那个 tab 的目录（_last_tab 记录上一个 tab 索引）
+        last = getattr(self, "_last_tab", None)
+        if last is not None and last != idx:
+            try:
+                if self.ed_out.text().strip():
+                    self._out_memo[last] = self.ed_out.text().strip()
+            except Exception:
+                pass
+        # 恢复目标 tab 的目录（没有记录就用默认值）
+        default = DEFAULT_OUT if idx == 0 else DEFAULT_OUT_PLACE
+        self.ed_out.setText(self._out_memo.get(idx) or default)
+        self._last_tab = idx
 
     def refresh_places(self):
         self.log("正在拉取考试点列表...")
@@ -980,6 +1009,69 @@ class MainWindow(QMainWindow):
             pass
 
     @staticmethod
+    def _extract_tokens_from_value(value):
+        """从单个 localStorage 值里提取所有 UUID 形态 token。
+
+        UOM 的登录态不是裸 UUID，而是 Base64(JSON) 存在 localStorage 的
+        `session_token` 键里，形如：
+            W3sibXNnIjoi...  ->  [{"msg":"操作成功","code":0,
+                "token":"c20ad1d4-....","username":"xxx"}, ...]
+        因此必须：① 值本身就是 UUID → 直接用；
+                 ② 值能 Base64 解码 → 递归扫解码后的 JSON 文本里的 UUID。
+        """
+        import re as _re
+        import base64 as _b64
+        import json as _json
+        uuid_re = _re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                              r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+        found = []
+
+        def _add(s):
+            for m in uuid_re.findall(str(s)):
+                if m not in found:
+                    found.append(m)
+
+        def _walk(obj, depth=0):
+            """递归遍历任意 JSON 结构，抽取所有 UUID 字符串。"""
+            if depth > 6:
+                return
+            if isinstance(obj, str):
+                _add(obj)
+            elif isinstance(obj, dict):
+                for v in obj.values():
+                    _walk(v, depth + 1)
+            elif isinstance(obj, (list, tuple)):
+                for v in obj:
+                    _walk(v, depth + 1)
+
+        raw = str(value or "")
+        # ① 裸 UUID
+        if uuid_re.fullmatch(raw.strip()):
+            _add(raw.strip())
+            return found
+        # ② 尝试 Base64 解码（含 URL-safe / 缺 padding 的情况）
+        s = raw.strip().strip('"')
+        for cand in {s, s.replace("-", "+").replace("_", "/")}:
+            if not cand:
+                continue
+            pad = cand + "=" * (-len(cand) % 4)
+            try:
+                dec = _b64.b64decode(pad, validate=False).decode("utf-8", "ignore")
+            except Exception:
+                continue
+            if not dec:
+                continue
+            try:
+                _walk(_json.loads(dec))
+            except Exception:
+                # 解码后不是合法 JSON，也再正则捞一遍
+                _add(dec)
+        # ③ 原串里直接正则兜底（可能 token 明文混在其它结构里）
+        _add(raw)
+        return found
+
+    @staticmethod
     def _scan_token_candidates(port=CDP_PORT):
         """连接调试端口，扫现有 UOM 页面的 localStorage/cookies，
         返回所有 UUID 形态的候选 token 列表（其中可能混有页面缓存的过期旧值，
@@ -995,20 +1087,22 @@ class MainWindow(QMainWindow):
                               r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
         def _pick_uuids(d):
-            """从 dict（cookies+origins）里收集所有 UUID 格式的 token"""
+            """从 dict（cookies+origins）里收集所有 UUID 格式的 token。
+            支持 Base64(JSON) 嵌套（UOM 的 session_token 就是这种）。"""
             found = []
             if not isinstance(d, dict):
                 return found
+            extract = MainWindow._extract_tokens_from_value
             for src in d.get("origins", []):
                 for k, v in (src.get("localStorage") or []):
-                    sv = str(v)
-                    if uuid_re.match(sv) and sv not in found:
-                        found.append(sv)
+                    for tok in extract(v):
+                        if tok not in found:
+                            found.append(tok)
             # 再看 cookies 里有没有 UUID 形态的值
             for c in d.get("cookies", []):
-                sv = str(c.get("value", ""))
-                if uuid_re.match(sv) and sv not in found:
-                    found.append(sv)
+                for tok in extract(c.get("value", "")):
+                    if tok not in found:
+                        found.append(tok)
             return found
 
         # 方式1：playwright connect_over_cdp + storage_state（推荐）
@@ -1040,9 +1134,9 @@ class MainWindow(QMainWindow):
                                 obj = pg.evaluate(js)
                                 if isinstance(obj, dict):
                                     for _k, v in obj.items():
-                                        sv = str(v)
-                                        if uuid_re.match(sv) and sv not in found:
-                                            found.append(sv)
+                                        for tok in MainWindow._extract_tokens_from_value(v):
+                                            if tok not in found:
+                                                found.append(tok)
                             except Exception:
                                 continue
                 return found
@@ -1093,9 +1187,9 @@ class MainWindow(QMainWindow):
                 if isinstance(val, dict):
                     found = []
                     for _k, v in val.items():
-                        sv = str(v)
-                        if uuid_re.match(sv) and sv not in found:
-                            found.append(sv)
+                        for tok in MainWindow._extract_tokens_from_value(v):
+                            if tok not in found:
+                                found.append(tok)
                     return found
                 return []
         except Exception:
@@ -1213,13 +1307,13 @@ class MainWindow(QMainWindow):
                     self.sig_token.emit(tok)
                     return
                 if cands:
-                    # 能扫到 token 但全部校验失败 → 是页面里缓存的过期旧值，
-                    # 必须在调试 Chrome 里重新登录一次才会产生新 token
+                    # 能扫到 token 但全部校验失败 → 是页面/localStorage 里缓存的
+                    # 过期旧值，必须在调试 Chrome 里重新登录一次才会产生新 token
                     if time.time() - last_hint >= 20:
                         last_hint = time.time()
                         self.log("扫到的登录态均已过期（页面缓存了旧 token）：请在调试"
-                                 "Chrome 的 UOM 页面退出账号后重新登录一次，"
-                                 "程序会自动识别新登录态 ...")
+                                 "Chrome 的 UOM 页面【退出账号后重新登录一次】，"
+                                 "登录成功瞬间程序会自动抓到新 token 并保存 ...")
                 else:
                     if time.time() - last_hint >= 20:
                         last_hint = time.time()
@@ -1258,6 +1352,7 @@ class MainWindow(QMainWindow):
         d = QFileDialog.getExistingDirectory(self, "选择输出目录", self.ed_out.text())
         if d:
             self.ed_out.setText(d)
+            self._remember_cur_out()   # 立刻记到当前 tab，切走再切回不丢
 
     def open_out(self):
         d = self.ed_out.text().strip()
