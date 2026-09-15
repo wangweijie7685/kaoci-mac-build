@@ -147,38 +147,69 @@ LIST_MODES = {
 }
 
 
-def fetch_list(start_date, end_date, page_size=500, mode="agency", exam_place=""):
-    """拉取考次列表（带 verifyCode）。
+def fetch_list(start_date, end_date, page_size=100, mode="agency", exam_place=""):
+    """拉取考次列表（自动分页，带 verifyCode）。
     mode: agency=按机构 / place=按考点；exam_place: 考试点 ID（空=全部）
+
+    2026-09-15 重要：UOM 服务端对单页条数加了硬上限 —— limit>100 一律返回
+    500（"服务器开小差了"，之前一直用 500 单页拉全量，现已必崩）。
+    这里改为 limit=100 + offset 循环翻页，直到取完 total。
     """
     cfg = LIST_MODES.get(mode)
     if not cfg:
         raise ValueError(f"未知模式 {mode}，可选: {list(LIST_MODES)}")
 
-    payload = {
-        "UOM_CAOKY_KAOCLJ_BILLCODE": "",
-        "UOM_CAOKY_KAOCLJ_KAOSRJ": [start_date or "", end_date or ""],
-        "UOM_CAOKY_KAOCLJ_EXAM_PLACE": exam_place or "",
-        "UOM_CAOKY_KAOCLJ_AGENCY": "",
-        "UOM_CAOKY_KAOCLJ_UNITCODE": "",
-        "sortFields": [],
-        "defineName": cfg["defineName"],
-        "offset": 0,
-        "limit": page_size,
-    }
-    if mode == "agency":
-        # 按机构查看额外带这两个筛选项
-        payload["UOM_CAOKY_KAOCLJ_PEIXXX_KAOSFWTGF"] = ""
-        payload["UOM_CAOKY_KAOCLJ_REGION"] = ""
+    PAGE_MAX = 100          # 服务端硬上限（实测 101 即 500）
+    page_size = min(page_size, PAGE_MAX)
 
-    r = requests.post(f"{BASE}/{cfg['path']}", headers=HEADERS, json=payload, timeout=60)
-    r.raise_for_status()
-    d = r.json()
-    if not isinstance(d, dict) or "rows" not in d:
-        raise RuntimeError(f"列表接口返回异常（Token 可能已过期）: {str(d)[:200]}")
+    all_rows = []
+    offset = 0
+    total = None
+    while True:
+        payload = {
+            "UOM_CAOKY_KAOCLJ_BILLCODE": "",
+            "UOM_CAOKY_KAOCLJ_KAOSRJ": [start_date or "", end_date or ""],
+            "UOM_CAOKY_KAOCLJ_EXAM_PLACE": exam_place or "",
+            "UOM_CAOKY_KAOCLJ_AGENCY": "",
+            "UOM_CAOKY_KAOCLJ_UNITCODE": "",
+            "sortFields": [],
+            "defineName": cfg["defineName"],
+            "offset": offset,
+            "limit": page_size,
+        }
+        if mode == "agency":
+            # 按机构查看额外带这两个筛选项
+            payload["UOM_CAOKY_KAOCLJ_PEIXXX_KAOSFWTGF"] = ""
+            payload["UOM_CAOKY_KAOCLJ_REGION"] = ""
+
+        r = requests.post(f"{BASE}/{cfg['path']}", headers=HEADERS,
+                          json=payload, timeout=60)
+        if r.status_code == 500:
+            # 单页超限等服务器侧 500：降半页大小重试一次，仍 500 则报错
+            if page_size > 10:
+                page_size = max(10, page_size // 2)
+                print(f"  服务端 500，单页降到 {page_size} 重试 ...")
+                continue
+            r.raise_for_status()
+        r.raise_for_status()
+        d = r.json()
+        if not isinstance(d, dict) or "rows" not in d:
+            raise RuntimeError(f"列表接口返回异常（Token 可能已过期）: {str(d)[:200]}")
+        all_rows.extend(d["rows"])
+        if total is None:
+            total = d.get("total") or 0
+        offset += len(d["rows"])
+        print(f"  查看维度: {'按机构' if mode == 'agency' else '按考点'}"
+              f" | 进度: {len(all_rows)}/{total}")
+        # 取完或本页不足一页时结束
+        if len(d["rows"]) < page_size or (total and len(all_rows) >= total) or not d["rows"]:
+            break
+    # 服务端翻页偶有漂移（取回数 > total），按 total 裁掉尾部多余行
+    if total and len(all_rows) > total:
+        all_rows = all_rows[:total]
     print(f"  查看维度: {'按机构' if mode == 'agency' else '按考点'}"
-          f" | 考次总数: {d.get('total')}，本次取回: {len(d['rows'])}")
-    return d["rows"]
+          f" | 考次总数: {total}，本次取回: {len(all_rows)}")
+    return all_rows
 
 
 def fetch_detail(bill_code, verify_code, retries=4):
