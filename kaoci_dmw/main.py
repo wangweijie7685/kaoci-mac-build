@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-考次链接大魔王  v1.3
+考次链接大魔王  v1.4
 =====================
 UOM 民航局无人机考试系统「考次链接」批量导出桌面工具
+
+v1.4 变更：
+  * 修复：token 解析支持 Base64 嵌套 —— UOM 登录态实际以 Base64(JSON)
+    形式存在 localStorage 的 session_token 键里，旧版按裸 UUID 匹配导致
+    始终扫不到新 token（表现为「扫到的登录态均已过期」）。现在自动解码。
+  * 新增：切换 Tab 时分别记忆各自的输出目录，来回切换不互相覆盖。
+  * 变更：默认输出目录改为用户 Downloads 目录。
 
 v1.3 变更：
   * 修复：token 过期后「一键获取登录态」失效 —— 之前扫到 localStorage 里
@@ -556,7 +563,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME}  v1.3")
+        self.setWindowTitle(f"{APP_NAME}  v1.4")
         self.resize(1180, 760)
         self.worker = None
         self._login_cancel = threading.Event()  # 一键登录取消信号
