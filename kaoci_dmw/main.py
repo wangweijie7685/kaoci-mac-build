@@ -814,7 +814,17 @@ class MainWindow(QMainWindow):
 
     def _append_log(self, msg):
         ts = datetime.datetime.now().strftime("%H:%M:%S")
-        self.txt_log.append(f"[{ts}] {msg}")
+        line = f"[{ts}] {msg}"
+        self.txt_log.append(line)
+        # 同步打到 console：源码运行直接看终端；exe 冻结模式下
+        # stdout 已在 main() 兜底重定向到 kaoci_run.log，不会丢
+        out = sys.stdout if sys.stdout is not None else sys.stderr
+        if out is not None:
+            try:
+                out.write(line + "\n")
+                out.flush()
+            except Exception:
+                pass
 
     def cur_panel(self):
         return self.panel_agency if self.tabs.currentIndex() == 0 else self.panel_place
