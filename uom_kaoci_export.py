@@ -27,6 +27,37 @@ import datetime
 import requests
 import pandas as pd
 
+# ---- 浏览器指纹模拟（v1.7） --------------------------------------------
+# UOM 风控会按 TLS/JA3 指纹识别客户端：requests 的 TLS 握手特征和真 Chrome
+# 差异明显，即使 UA 完全一致也会被判「脚本」触发限制登录。
+# curl_cffi 用 libcurl-impersonate 直接复刻 Chrome 的 TLS/HTTP2 指纹，
+# 从握手层就与真浏览器无法区分。
+try:
+    from curl_cffi import requests as cffi_requests
+    _CFFI_IMPERSONATE = "chrome"   # 跟随最新 Chrome 指纹
+except Exception:
+    cffi_requests = None           # 未安装时自动降级回 requests
+    _CFFI_IMPERSONATE = None
+
+# 指纹会话：维持连接复用与 Cookie 行为，更接近真实浏览器
+_session = None
+if cffi_requests is not None:
+    try:
+        _session = cffi_requests.Session(impersonate=_CFFI_IMPERSONATE)
+    except Exception:
+        try:
+            _session = cffi_requests.Session()
+        except Exception:
+            _session = None
+
+
+def _post_json(url, headers, payload, timeout):
+    """带浏览器指纹的 POST；curl_cffi 不可用时退回 requests"""
+    if _session is not None:
+        return _session.post(url, headers=headers, json=payload, timeout=timeout)
+    return requests.post(url, headers=headers, json=payload, timeout=timeout)
+
+
 # ==================== 配置 ====================
 TOKEN = "e5cad3fb-236c-4be5-a841-09cefc5d868f"
 BASE = "https://uom.caac.gov.cn/api"
@@ -182,8 +213,7 @@ def fetch_list(start_date, end_date, page_size=100, mode="agency", exam_place=""
             payload["UOM_CAOKY_KAOCLJ_PEIXXX_KAOSFWTGF"] = ""
             payload["UOM_CAOKY_KAOCLJ_REGION"] = ""
 
-        r = requests.post(f"{BASE}/{cfg['path']}", headers=HEADERS,
-                          json=payload, timeout=60)
+        r = _post_json(f"{BASE}/{cfg['path']}", HEADERS, payload, 60)
         if r.status_code == 500:
             # 单页超限等服务器侧 500：降半页大小重试一次，仍 500 则报错
             if page_size > 10:
@@ -223,10 +253,16 @@ def fetch_detail(bill_code, verify_code, retries=4):
         "schemeCode": "",
     }
     last = None
+    # curl_cffi 与 requests 的 HTTPError 类型不同，统一按「带 response 的异常」处理
+    _http_errors = [requests.HTTPError]
+    try:
+        from curl_cffi.requests.errors import HTTPError as _CffiHTTPError
+        _http_errors.append(_CffiHTTPError)
+    except Exception:
+        pass
     for attempt in range(retries):
         try:
-            r = requests.post(f"{BASE}/bill/view/get", headers=HEADERS,
-                              json=payload, timeout=120)
+            r = _post_json(f"{BASE}/bill/view/get", HEADERS, payload, 120)
             if r.status_code == 429:
                 wait = 10 * (attempt + 1)
                 print(f"      429 限流，等待 {wait}s 后重试 ({attempt + 1}/{retries})")
@@ -235,7 +271,7 @@ def fetch_detail(bill_code, verify_code, retries=4):
             r.raise_for_status()
             d = r.json()
             break
-        except requests.HTTPError as e:
+        except tuple(_http_errors) as e:
             last = e
             if getattr(e.response, "status_code", None) == 429:
                 wait = 10 * (attempt + 1)

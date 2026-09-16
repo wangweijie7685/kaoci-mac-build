@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-考次链接大魔王  v1.6
+考次链接大魔王  v1.7
 =====================
 UOM 民航局无人机考试系统「考次链接」批量导出桌面工具
+
+v1.7 变更：
+  * 新增：Chrome 浏览器指纹 —— UOM 风控开始按 TLS/JA3 指纹识别脚本
+    客户端（表现为 token 频繁被「限制登录」），网络层改用 curl_cffi
+    模拟真 Chrome 握手指纹，从协议层与真浏览器无差别；requests 保留兜底。
+  * v1.6：考点过滤框 + 服务端单页 limit<=100 硬上限自动分页修复。
 
 v1.6 变更：
   * 新增：考点过滤框 —— 考试点太多，下拉翻页找不到。
@@ -57,6 +63,7 @@ if not getattr(sys, "frozen", False):
 # "Unable to import required dependency numpy"。
 SELF_TEST_MODULES = [
     "requests",           # 网络请求
+    "curl_cffi",          # v1.7: Chrome TLS 指纹模拟（绕 UOM 风控）
     "pandas",             # core 模块导 Excel
     "numpy",              # pandas 的硬依赖
     "openpyxl",           # pandas 写 xlsx 的引擎
@@ -653,7 +660,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME}  v1.6")
+        self.setWindowTitle(f"{APP_NAME}  v1.7")
         self.resize(1180, 760)
         self.worker = None
         self._login_cancel = threading.Event()  # 一键登录取消信号

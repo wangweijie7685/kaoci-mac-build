@@ -25,7 +25,8 @@ import subprocess
 # pandas 在运行时 ImportError（pandas 强依赖 numpy），exe 一启动就崩。
 # 这里强制校验「运行时真正用到的库」都能导入，缺一个就直接中止打包。
 REQUIRED = [
-    "requests",      # 网络请求
+    "requests",      # 网络请求（兜底）
+    "curl_cffi",     # v1.7: Chrome TLS/JA3 指纹模拟，绕 UOM 风控「限制登录」
     "pandas",        # core: uom_kaoci_export 导出 xlsx
     "numpy",         # pandas 的硬依赖，禁止排除
     "openpyxl",      # pandas 写 xlsx 的引擎
@@ -64,6 +65,7 @@ args = [
     "--hidden-import", "pandas",
     "--hidden-import", "numpy",
     "--hidden-import", "openpyxl",
+    "--hidden-import", "curl_cffi",
     # token 解析用到 Base64(JSON)，显式带上防裁剪
     "--hidden-import", "base64",
     "--hidden-import", "json",

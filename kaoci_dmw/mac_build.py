@@ -38,13 +38,14 @@ def setup_venv():
     # PyInstaller 必须装在 venv 里（不要用全局）
     run([pip, "install", "--upgrade", "pip"])
     run([pip, "install", "PySide6==6.7.*", "requests", "pandas", "numpy",
-         "openpyxl", "pyinstaller>=6.0"])
+         "openpyxl", "curl_cffi", "pyinstaller>=6.0"])
 
 
 def selfcheck_venv():
     """打包前确认运行时依赖都能在 venv 里导入，缺一个就中止。"""
     venv_py = os.path.join(VENV_DIR, "bin", "python")
-    required = ["requests", "pandas", "numpy", "openpyxl", "PySide6.QtWidgets"]
+    required = ["requests", "curl_cffi", "pandas", "numpy", "openpyxl",
+                "PySide6.QtWidgets"]
     code = (
         "import sys\n"
         "bad=[]\n"
@@ -141,6 +142,7 @@ def build():
         "--hidden-import", "pandas",
         "--hidden-import", "numpy",
         "--hidden-import", "openpyxl",
+        "--hidden-import", "curl_cffi",
         # 显式带上标准库（token 解析用到 base64/json，避免极端情况下被裁掉）
         "--hidden-import", "base64",
         "--hidden-import", "json",
